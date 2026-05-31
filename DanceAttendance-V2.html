@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dance Academy Attendance Portal</title>
+  <style>
+    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 30px; background-color: #f3f4f6; color: #333; }
+    .container { max-width: 800px; margin: auto; background: #fff; padding: 25px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); }
+    h2 { margin-top: 0; color: #2c3e50; border-bottom: 2px solid #eee; padding-bottom: 10px; }
+    .controls { display: flex; gap: 15px; margin-bottom: 25px; align-items: center; }
+    label { font-weight: bold; color: #555; }
+    select { padding: 10px; border-radius: 6px; border: 1px solid #ccc; font-size: 16px; min-width: 240px; }
+    .btn-refresh { padding: 10px 15px; background-color: #3498db; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; }
+    .btn-refresh:hover { background-color: #2980b9; }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+    th, td { padding: 12px 15px; text-align: left; border-bottom: 1px solid #ddd; }
+    th { background-color: #f8f9fa; color: #555; }
+    .btn-action { padding: 8px 16px; border: none; border-radius: 4px; font-weight: bold; cursor: pointer; transition: 0.2s; min-width: 90px; }
+    .btn-in { background-color: #2ecc71; color: white; }
+    .btn-in:hover { background-color: #27ae60; }
+    .btn-out { background-color: #e74c3c; color: white; }
+    .btn-out:hover { background-color: #c0392b; }
+    .status-badge { display: inline-block; padding: 4px 8px; border-radius: 12px; font-size: 12px; font-weight: bold; margin-right: 5px; }
+    .status-in { background-color: #e8f5e9; color: #2e7d32; }
+    .status-out { background-color: #ffebee; color: #c62828; }
+    .status-scheduled { background-color: #e3f2fd; color: #0d47a1; }
+    .status-extra { background-color: #fff3e0; color: #e65100; }
+    .loading { font-style: italic; color: #7f8c8d; text-align: center; padding: 20px; }
+  </style>
+</head>
+<body>
+
+<div class="container">
+  <h2>🕺 Dance Academy Attendance Portal</h2>
+  
+  <div class="controls">
+    <div>
+      <label for="batchFilter">Select Batch: </label>
+      <select id="batchFilter" onchange="filterStudents()">
+        <option value="">-- Click Sync Sheets Data --</option>
+      </select>
+    </div>
+    <button class="btn-refresh" id="syncBtn" onclick="initSystem()">🔄 Sync Sheets Data</button>
+  </div>
+
+  <table id="studentTable">
+    <thead>
+      <tr>
+        <th>Student Name</th>
+        <th>Attendance Status</th>
+        <th>Action</th>
+      </tr>
+    </thead>
+    <tbody id="studentList">
+      <tr>
+        <td colspan="3" class="loading">Dashboard ready. Press Sync to pull records...</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<script>
+  const WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbxwvUkDKbLGRGvyPM7aGUWlHyse1nw51oLwQGz8rOmVrRh6eCzOI7Y2O8otIawGAGEiyQ/exec';
+
+  let rawMasterData = [];
+  let rawSchedule = [];
+  let rawAdditional = [];
+  let rawAttendance = [];
+  let uniqueBatches = new Set();
+  let syncTimeoutChecker;
+
+  window.onload = function() {
+    initSystem();
+  };
+
+  function sendJsonpRequest(url, callbackName) {
+  // 1. Clean up any previous script tags completely
+  const oldScript = document.getElementById('jsonp-script');
+  if (oldScript) oldScript.remove();
+
+  // 2. Generate a unique random stamp to bypass browser caching rules
+  const uniqueId = new Date().getTime();
+
+  // 3. Rebuild the execution script element securely
+  const script = document.createElement('script');
+  script.id = 'jsonp-script';
+  // Attach a unique timestamp parameter to convince the browser it is a safe, fresh call
+  script.src = `${url}&callback=${callbackName}&_nocache=${uniqueId}`;
+  
+  // 4. Inject it into the page layout document frame safely
+  document.body.appendChild(script);
+  }
+
+  function initSystem() {
+    const syncBtn = document.getElementById('syncBtn');
+    const tbody = document.getElementById('studentList');
+    
+    syncBtn.disabled = true;
+    syncBtn.textContent = '⌛ Syncing...';
+    tbody.innerHTML = '<tr><td colspan="3" class="loading">Streaming fast data pipelines...</td></tr>';
+    
+    sendJsonpRequest(`${WEB_APP_URL}?action=getData`, 'handleDataResponse');
+  }
+
+  function handleDataResponse(data) {
+    clearTimeout(syncTimeoutChecker); 
+    const syncBtn = document.getElementById('syncBtn');
+    const tbody = document.getElementById('studentList');
+
+    if (data.success === false) {
+      tbody.innerHTML = `<tr><td colspan="3" style="color:red; padding:20px; text-align:center;">⚠️ ${data.error}</td></tr>`;
+      syncBtn.disabled = false;
+      syncBtn.textContent = '🔄 Sync Data';
+      return;
+    }
+    
+    rawMasterData = data.masterStudents || [];
+    rawSchedule = data.schedule || [];
+    rawAdditional = data.additionalSchedule || [];
+    rawAttendance = data.attendance || [];
+
+    uniqueBatches.clear();
+    
+    // Extraction: Column F (Index 5) from raw master rows
+    rawMasterData.forEach(row => {
+      if (row && row[5]) {
+        var bName = row[5].toString().trim();
+        if (bName !== "" && bName !== "Batch Name") uniqueBatches.add(bName);
+      }
+    });
+
+    populateBatchDropdown();
+    filterStudents();
+    
+    syncBtn.disabled = false;
+    syncBtn.textContent = '🔄 Sync Data';
+  }
+
+  function populateBatchDropdown() {
+    const dropdown = document.getElementById('batchFilter');
+    const currentSelection = dropdown.value;
+    dropdown.innerHTML = '<option value="">-- Select a Batch --</option>';
+    
+    Array.from(uniqueBatches).sort().forEach(batch => {
+      const opt = document.createElement('option');
+      opt.value = batch;
+      opt.textContent = batch;
+      dropdown.appendChild(opt);
+    });
+    
+    if (currentSelection && uniqueBatches.has(currentSelection)) dropdown.value = currentSelection;
+  }
+
+  function filterStudents() {
+    const selectedBatch = document.getElementById('batchFilter').value;
+    const tbody = document.getElementById('studentList');
+    tbody.innerHTML = '';
+
+    if (!selectedBatch) {
+      tbody.innerHTML = '<tr><td colspan="3" style="text-align:center; color:#999; padding:20px;">Please pick a batch to view students.</td></tr>';
+      return;
+    }
+
+    const studentsInBatch = rawMasterData.filter(row => row && row[5] && row[5].toString().trim() === selectedBatch);
+
+    if (studentsInBatch.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="3" style="text-align:center; padding:20px;">No students registered in this batch.</td></tr>';
+      return;
+    }
+
+    const todayStr = new Date().toLocaleDateString('en-GB'); 
+    const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const currentDayName = days[new Date().getDay()];
+
+    studentsInBatch.forEach(student => {
+      const studentName = student[2]; // Column C (Index 2): Student Name
+      if (!studentName) return;
+      
+      const activeLog = rawAttendance.find(log => {
+        if (!log || !log[0] || !log[1]) return false;
+        let logDate = log[3]; 
+        if (logDate && logDate.toString().includes('T')) {
+          logDate = new Date(logDate).toLocaleDateString('en-GB');
+        }
+        return log[0].toString().trim() === selectedBatch && 
+               log[1].toString().trim() === studentName.toString().trim() && 
+               logDate.toString().trim() == todayStr && 
+               (!log[5] || log[5].toString().trim() === "");
+      });
+      
+      const isIn = !!activeLog;
+
+      let calculatedStatus = "Extra";
+      
+      const isRegularDay = rawSchedule.some(sched => 
+        sched && sched[0] && sched[1] && sched[2] &&
+        sched[0].toString().trim() === selectedBatch && 
+        sched[1].toString().trim() === studentName.toString().trim() && 
+        sched[2].toString().trim().toLowerCase() === currentDayName.toLowerCase()
+      );
+      
+      const isAdditionalDay = rawAdditional.some(addSched => 
+        addSched && addSched[0] && addSched[1] && addSched[2] &&
+        addSched[0].toString().trim() === selectedBatch && 
+        addSched[1].toString().trim() === studentName.toString().trim() && 
+        addSched[2].toString().trim().toLowerCase() === currentDayName.toLowerCase()
+      );
+
+      if (isRegularDay || isAdditionalDay) {
+        calculatedStatus = "Scheduled";
+      }
+
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td><strong>${studentName}</strong></td>
+        <td>
+          <span class="status-badge ${isIn ? 'status-in' : 'status-out'}">${isIn ? 'IN' : 'OUT'}</span>
+          <span class="status-badge ${calculatedStatus === 'Scheduled' ? 'status-scheduled' : 'status-extra'}">(${calculatedStatus})</span>
+        </td>
+        <td>
+          <button class="btn-action ${isIn ? 'btn-out' : 'btn-in'}" 
+                  onclick="toggleAttendance('${selectedBatch}', '${studentName.replace(/'/g, "\\'")}', '${calculatedStatus}', ${isIn})">
+            ${isIn ? 'OUT' : 'IN'}
+          </button>
+        </td>
+      `;
+      tbody.appendChild(tr);
+    });
+  }
+
+  function toggleAttendance(batch, studentName, status, isIn) {
+    const tbody = document.getElementById('studentList');
+    tbody.innerHTML = '<tr><td colspan="3" class="loading">Logging timestamp directly to Google Sheet...</td></tr>';
+    
+    const url = `${WEB_APP_URL}?action=toggleAttendance&batch=${encodeURIComponent(batch)}&studentName=${encodeURIComponent(studentName)}&status=${encodeURIComponent(status)}&isCurrentlyIn=${isIn}`;
+    sendJsonpRequest(url, 'handleToggleResponse');
+  }
+
+  function handleToggleResponse(result) {
+    clearTimeout(syncTimeoutChecker);
+    if (result.success) {
+      initSystem(); 
+    } else {
+      alert("Execution Error: " + result.error);
+initSystem();
+}
+}
+</script>
+</body>
+</html>
